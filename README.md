@@ -172,6 +172,13 @@ python scripts/train_detector.py \
     --batch-size 16
 ```
 
+**Quickstart for the new training script**
+
+1. Install deps: `pip install torch torchvision pyyaml pillow`
+2. Prepare `data/annotations/train.json` and `data/annotations/val.json` (list of records with `image`, `label`, and `bbox`).
+3. Point `configs/detector.yaml` to your image root and label set. Set `task` to `classification` (ResNet18 head) or `detection` (FasterRCNN).
+4. Run: `python scripts/train_detector.py --config configs/detector.yaml`
+
 ---
 
 ### **2️⃣ Generate Features & Cropped Tumor Regions**

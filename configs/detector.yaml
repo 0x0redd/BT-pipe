@@ -1,0 +1,29 @@
+experiment_name: tumor_detector_baseline
+
+# Choose between "classification" (CNN) or "detection" (FasterRCNN)
+task: detection
+
+model:
+  name: fasterrcnn_resnet50_fpn
+  pretrained: true
+
+data:
+  train_annotations: data/annotations/train.json
+  val_annotations: data/annotations/val.json
+  image_root: data/processed
+  labels:
+    - No Tumor
+    - Glioma
+    - Meningioma
+    - Pituitary
+
+train:
+  epochs: 10
+  batch_size: 2        # FasterRCNN fits small batches
+  lr: 0.0002
+  weight_decay: 0.0005
+  num_workers: 2
+  grad_clip: 1.0
+  checkpoint_dir: runs/detector
+  save_every: 1
+
