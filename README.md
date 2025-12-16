@@ -1,293 +1,257 @@
-# 📘 **README.md – Brain Tumor Multi-Step Diagnosis Pipeline (Detection + VLM Reporting)**
+# Brain Tumor Multi-Step Diagnosis Pipeline (BraTS Task01)
 
+**Goal:** end-to-end pipeline that takes a **4D multi-modal MRI** (FLAIR/T1/T1gd/T2) → performs **tumor detection + multi-class 3D segmentation** → generates a **structured Findings JSON** (volume/location/composition) → produces a **natural-language report** using **Ollama (Llama 3.1)**.
 
-## 🧠 Project Overview
-
-This repository implements a **complete multi-step AI pipeline** for automated brain tumor analysis from MRI scans.
-The system combines:
-
-1. **A custom-trained tumor detection & classification model** (YOLO / Faster-RCNN / CNN)
-2. **A feature extraction module** (tumor size, location, cropped ROI, etc.)
-3. **A Vision-Language Model (VLM)** fine-tuned to generate **radiology-style reports**
-
-All models are trained **from scratch**, including data preprocessing, augmentation, training loops, evaluation, and fine-tuning.
+> Research/education project only — not for clinical diagnosis.
 
 ---
 
-## 🔥 Features
+## What you already have (from `my-final-project.ipynb`)
 
-* **Tumor classification** (Glioma, Meningioma, Pituitary, No Tumor)
-* **Bounding box detection** (if YOLO / Faster-RCNN option is used)
-* **Tumor region cropping & medically relevant feature extraction**
-* **VLM-based radiology report generation** using structured inputs + image encodings
-* **End-to-end training scripts** for all modules
-* **Evaluation pipeline** with metrics (mAP, F1, BLEU/ROUGE for text quality)
-* **Modular architecture** → easy to swap models
-* **FastAPI inference server** (optional)
-* **Clean dataset schema and JSON annotation format**
+Your notebook is a good starting point for **data access + 3D model experimentation**, but it currently:
+
+* uses **only one modality** (channel 0) during resizing
+* performs **binary segmentation** (single sigmoid output)
+* resizes labels with **anti_aliasing=True** (this can corrupt discrete classes)
+* doesn’t include BraTS metrics (WT/TC/ET) or a reporting step
+
+This README describes how to upgrade it to the full **multi-step diagnosis pipeline**.
 
 ---
 
-## 🏗 Project Architecture
+## Dataset (Medical Segmentation Decathlon / BraTS Task01)
+
+* **Input per case:** one **4D NIfTI** `BRATS_XXX.nii.gz` with shape **(240, 240, 155, 4)**
+
+  * channel 0: FLAIR
+  * channel 1: T1w
+  * channel 2: T1gd
+  * channel 3: T2w
+* **Label per case:** one **3D NIfTI** with segmentation classes:
+
+  * 0 background
+  * 1 edema
+  * 2 non-enhancing tumor
+  * 3 enhancing tumor
+    *(Some Task01 releases use label 4 for enhancing; if so, remap 4 → 3 in preprocessing.)*
+
+---
+
+## Final Pipeline (high level)
+
+### Phase 1 — Detection + 3D Segmentation
+
+1. **Load & preprocess** 4D MRI:
+
+   * Convert to channel-first: `(4, H, W, D)`
+   * Normalize intensities **per modality**
+   * Patch-based sampling (GPU friendly)
+2. **3D multi-class segmentation**:
+
+   * baseline: 3D U-Net / DynUNet / SegResNet
+   * output: voxel mask with classes 0–3
+3. **Detection output** (derived from segmentation):
+
+   * tumor present/absent
+   * bounding box of tumor region
+   * optional: per-region bboxes (edema vs core)
+
+### Phase 2 — Findings JSON + VLM/LLM Reporting
+
+4. **Measurements extraction** (deterministic):
+
+   * volumes per class (cm³) + WT/TC/ET volumes
+   * centroid + laterality (left/right by midline heuristic)
+   * bounding box & largest diameter (mm) using voxel spacing
+   * QC flags (empty mask, tiny tumor, etc.)
+5. **Report generation via Ollama (Llama 3.1)**:
+
+   * feed Findings JSON into a strict prompt:
+
+     * “use only provided measurements”
+     * “if missing → Not assessed”
+   * output: Technique / Findings / Impression
+
+---
+
+## Recommended Repo Structure
 
 ```
-brain-tumor-ai/
-│
-├── data/
-│   ├── raw/                # Original datasets (BRATS, Kaggle, Figshare, etc.)
-│   ├── processed/          # Preprocessed MRI images
-│   ├── annotations/        # JSON annotations for detection + VLM
-│
-├── models/
-│   ├── detector/           # YOLO/FasterRCNN implementation & training
-│   ├── vlm/                # VLM fine-tuning scripts (Unsloth / vLLM)
-│   ├── feature_extractor/  # Tumor location, size, ROI crop
-│
-├── scripts/
-│   ├── preprocess.py
-│   ├── train_detector.py
-│   ├── train_vlm.py
-│   ├── evaluate.py
-│   ├── inference_pipeline.py
-│
-├── configs/
-│   ├── detector.yaml
-│   ├── vlm_config.json
-│   ├── dataset_schema.json
-│
-├── notebooks/
-│   ├── EDA.ipynb           # Dataset exploration
-│   ├── Detector_Training.ipynb
-│   ├── VLM_FineTune.ipynb
-│
-├── docs/
-│   ├── architecture_diagram.png
-│   ├── dataset_guidelines.md
-│   ├── vlm_prompting.md
-│
-├── app/
-│   ├── api.py              # FastAPI server
-│   ├── ui/                 # Optional frontend
-│
-└── README.md
-```
-
----
-
-## 🧩 Pipeline Description
-
-### **Step 1 — Tumor Detection & Classification**
-
-You will train a model from scratch using PyTorch.
-You can choose between:
-
-* CNN classifier
-* Faster-RCNN
-* YOLOv8/Yolov12
-
-**Output Example:**
-
-```json
-{
-  "tumor_type": "Glioma",
-  "confidence": 0.93,
-  "bbox": [x1, y1, x2, y2]
-}
-```
-
----
-
-### **Step 2 — Medical Feature Extraction**
-
-Using the bounding box you compute:
-
-* Tumor location (left/right hemisphere)
-* Estimated size (mm² or cm²)
-* Crop of tumor region
-* Shape + intensity stats
-
-**Output Example:**
-
-```json
-{
-  "location": "Left frontal lobe",
-  "size_mm": 24.7,
-  "crop_path": "data/crops/image123.png"
-}
+brain-tumor-pipeline/
+├─ notebooks/
+│  ├─ my-final-project.ipynb
+│  ├─ brats_segmentation_train.ipynb
+│  └─ brats_phase2_reporting.ipynb
+├─ src/
+│  ├─ data/
+│  │  ├─ brats_dataset.py
+│  │  └─ transforms.py
+│  ├─ models/
+│  │  └─ seg_unet3d.py
+│  ├─ inference/
+│  │  ├─ sliding_window.py
+│  │  └─ postprocess.py
+│  ├─ reporting/
+│  │  ├─ findings.py
+│  │  ├─ prompt_templates.py
+│  │  └─ ollama_client.py
+│  └─ metrics/
+│     ├─ segmentation_metrics.py
+│     └─ brats_regions.py
+├─ scripts/
+│  ├─ train_seg.py
+│  ├─ infer_case.py
+│  └─ generate_report.py
+├─ runs/
+│  ├─ checkpoints/
+│  ├─ predictions/
+│  └─ reports/
+└─ README.md
 ```
 
 ---
 
-### **Step 3 — VLM Radiology Reporting**
+## Environment Setup
 
-You fine-tune a Vision-Language Model using Unsloth or vLLM.
+### 1) Python + CUDA (recommended)
 
-**Inputs to the VLM:**
+* Python **3.10/3.11**
+* PyTorch **CUDA build** (driver can be CUDA 12.x; PyTorch cu121 is fine)
 
-* Original MRI
-* Tumor crop
-* Detected tumor class
-* Extracted features
-
-**Output:**
-A radiology-style, structured report.
-
----
-
-## 📦 Dataset Requirements
-
-This project supports multiple sources:
-
-* **BRATS 2020/2021**
-* **Kaggle Brain Tumor Dataset**
-* **Figshare MRI datasets**
-
-You must unify all datasets into the following JSON format:
-
-### **dataset_schema.json**
-
-```json
-{
-  "image": "path/to/mri.png",
-  "label": "Glioma",
-  "bbox": [100, 40, 350, 300],
-  "extra_features": {
-    "location": "Left temporal lobe",
-    "size_mm": 27.1
-  },
-  "report": "Ground truth radiology report here."
-}
-```
-
----
-
-## 🏋️ Training From Scratch
-
-### **1️⃣ Train the Tumor Detector**
+Example:
 
 ```bash
-python scripts/train_detector.py \
-    --config configs/detector.yaml \
-    --epochs 100 \
-    --batch-size 16
+python -m venv dl
+dl\Scripts\activate
+pip install --upgrade pip
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install monai nibabel numpy matplotlib requests
 ```
 
-**Quickstart for the new training script**
+### 2) Ollama + Llama 3.1
 
-1. Install deps: `pip install torch torchvision pyyaml pillow`
-2. Prepare `data/annotations/train.json` and `data/annotations/val.json` (list of records with `image`, `label`, and `bbox`).
-3. Point `configs/detector.yaml` to your image root and label set. Set `task` to `classification` (ResNet18 head) or `detection` (FasterRCNN).
-4. Run: `python scripts/train_detector.py --config configs/detector.yaml`
-
----
-
-### **2️⃣ Generate Features & Cropped Tumor Regions**
+Make sure Ollama is running:
 
 ```bash
-python scripts/preprocess.py
+ollama list
 ```
 
 ---
 
-### **3️⃣ Fine-Tune the VLM**
+## How to reach the goal (Implementation Roadmap)
 
-```bash
-python scripts/train_vlm.py \
-    --config configs/vlm_config.json \
-    --epochs 5
-```
+### Milestone A — Correct preprocessing (multi-modal, segmentation-safe)
 
----
+* ✅ Keep all **4 modalities**
+* ✅ Don’t resize labels with anti-aliasing
 
-## 🧪 Evaluation
+  * if resizing is necessary: **nearest neighbor** for labels
+* ✅ Use orientation normalization + intensity normalization per modality
+* ✅ Patch sampling (pos/neg) to fit GPU memory
 
-### **Detection Metrics**
+**Deliverable:** dataloader that returns:
 
-* mAP (0.5 / 0.5:0.95)
-* Precision / Recall
-* Confusion Matrix
-
-### **Text Report Metrics**
-
-* BLEU
-* ROUGE-L
-* Medical factuality score (custom)
-
-Run evaluation:
-
-```bash
-python scripts/evaluate.py
-```
+* image tensor: `(B, 4, H, W, D)`
+* label tensor: `(B, 1, H, W, D)` integer classes
 
 ---
 
-## 🚀 Inference Pipeline
+### Milestone B — Baseline 3D multi-class segmentation model
 
-For deployment, combine all steps:
+Start with a 3D U-Net baseline:
 
-```bash
-python scripts/inference_pipeline.py \
-    --image test/sample.png \
-    --output report.json
-```
+* loss: **Dice + CrossEntropy** (handles imbalance)
+* training: mixed precision + patch sampling
+* inference: **sliding window**
 
-Output example:
-
-```json
-{
-  "tumor_type": "Pituitary",
-  "features": { "size_mm": 18.4, "location": "Right side" },
-  "report": "The scan demonstrates a pituitary macroadenoma..."
-}
-```
+**Deliverable:** checkpoint + validation metrics.
 
 ---
 
-## 🌐 Optional: FastAPI Server
+### Milestone C — BraTS evaluation (the right way)
 
-Start the API:
+Compute:
 
-```bash
-uvicorn app.api:app --reload
-```
+* per-class Dice/IoU (classes 1/2/3)
+* BraTS regions:
 
-Send a request:
+  * **WT** = (1|2|3)
+  * **TC** = (2|3)
+  * **ET** = (3)
+* optional: sensitivity/specificity per region
 
-```bash
-POST /analyze
-```
-
----
-
-## 📚 Documentation
-
-| Topic         | File                            |
-| ------------- | ------------------------------- |
-| Dataset rules | `docs/dataset_guidelines.md`    |
-| VLM prompting | `docs/vlm_prompting.md`         |
-| Architecture  | `docs/architecture_diagram.png` |
+**Deliverable:** metrics table + plots per epoch.
 
 ---
 
-## 🤝 Contributing
+### Milestone D — Detection output (derived from mask)
 
-Pull requests are welcome!
-Please open an issue to discuss improvements or bugs.
+From predicted segmentation:
+
+* tumor present/absent
+* bounding box `(minx,miny,minz,maxx,maxy,maxz)`
+* largest diameter estimate
+
+**Deliverable:** `prediction.json` per case including detection fields.
 
 ---
 
-## 📄 License
+### Milestone E — Findings JSON + Reporting with Ollama (Llama 3.1)
 
-MIT License — This project is fully open for research and educational use.
+1. Build Findings JSON:
+
+* volumes (cm³) by class + WT/TC/ET
+* centroid + laterality
+* diameter + bbox
+* QC flags
+
+2. Generate report:
+
+* strict prompt that forbids hallucination
+* output to `runs/reports/<case_id>.md`
+
+**Deliverable:** `findings.json` + `report.md` per case.
 
 ---
 
-## ⭐ Acknowledgements
+## Prompting Strategy (Ollama / Llama 3.1)
 
-This project integrates:
+Use a **fact-locked** prompt:
 
-* PyTorch
-* Unsloth / vLLM
-* YOLO / Faster-RCNN
-* Medical imaging datasets (BRATS, Figshare)
+* Provide Findings JSON as the single source of truth
+* Rules:
+
+  * “Use ONLY these values”
+  * “If missing → Not assessed”
+  * “No patient demographics or symptoms”
+
+This makes the report **auditable** and reduces hallucination.
+
+---
+
+## Expected Baseline Outcomes (sanity targets)
+
+With a reasonable 3D U-Net baseline (proper preprocessing + loss), you should see:
+
+* Dice for WT/TC/ET improving steadily (ET is usually hardest)
+* Meaningful volume estimates and stable laterality/centroid outputs
+* Reports that consistently include computed numbers (not invented)
+
+*(Exact numbers depend on split/augmentation and compute limits.)*
+
+---
+
+## Reliability, Interpretability, and Compliance
+
+* **No PHI** should be stored or sent to the LLM
+* Store only:
+
+  * segmentation masks
+  * derived numeric findings (volumes, bbox, centroid)
+  * optional overlay images without identifiers
+* Add QC flags to every case:
+
+  * empty prediction
+  * tiny tumor
+  * suspicious volumes
 
